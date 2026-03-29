@@ -47,7 +47,8 @@ def send_sms(to: str, body: str) -> None:
     msg["Reply-To"] = MAILGUN_SANDBOX
     msg.attach(MIMEText(body, "plain"))
 
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+    with smtplib.SMTP("smtp.gmail.com", 587) as server:
+        server.starttls()
         server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
         server.sendmail(GMAIL_ADDRESS, to, msg.as_string())
     logger.info("Sent SMS to %s: %s", to, body)
