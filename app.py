@@ -53,28 +53,32 @@ def send_sms(to: str, body: str) -> None:
     logger.info("Sent SMS to %s: %s", to, body)
 
 
-def extract_body(form) -> str:
-    """Try multiple fields to extract the message body."""
+def extract_body(form, files) -> str:
+    """Extract message text from form fields or uploaded attachments."""
 
-    # 1. Standard Mailgun fields
+    # 1. Standard Mailgun direct fields
     for field in ["stripped-text", "body-plain"]:
         val = form.get(field, "").strip()
         if val:
             return val
 
-    # 2. Gmail forwards body as attachment-1
+    # 2. T-Mobile sends SMS as MMS with text in a .txt attachment file
+    # Mailgun passes these as file uploads in request.files
     attachment_count = int(form.get("attachment-count", 0))
     for i in range(1, attachment_count + 1):
-        attachment = form.get(f"attachment-{i}", "").strip()
-        if attachment:
-            logger.info("Found body in attachment-%d: %s", i, attachment[:200])
-            return attachment
+        file = files.get(f"attachment-{i}")
+        if file and file.filename.endswith(".txt"):
+            text = file.read().decode("utf-8", errors="ignore").strip()
+            if text:
+                logger.info("Extracted text from %s: %s", file.filename, text)
+                return text
 
     # 3. Try body-html stripped of tags as last resort
     html = form.get("body-html", "").strip()
     if html:
         import re
-        text = re.sub(r'<[^>]+>', '', html).strip()
+        text = re.sub(r'<[^>]+>', ' ', html).strip()
+        text = re.sub(r'\s+', ' ', text).strip()
         if text:
             return text
 
@@ -82,17 +86,6 @@ def extract_body(form) -> str:
 
 
 def extract_sender(form) -> str:
-    # For Gmail forwarded emails, get the original sender from X-Envelope-From
-    # which contains the T-Mobile gateway address
-    headers_raw = form.get("message-headers", "")
-    if headers_raw:
-        try:
-            headers = json.loads(headers_raw)
-            for header in headers:
-                if header[0] == "X-Forwarded-For":
-                    return header[1].strip()
-        except Exception:
-            pass
     return form.get("sender") or form.get("From") or ""
 
 
@@ -119,7 +112,7 @@ def incoming_email():
             abort(403)
 
     sender    = extract_sender(request.form)
-    user_text = extract_body(request.form)
+    user_text = extract_body(request.form, request.files)
 
     logger.info("Incoming from %s: %s", sender, user_text)
 
