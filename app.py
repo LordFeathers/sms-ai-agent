@@ -1,7 +1,6 @@
 import os
 import logging
 import smtplib
-import email
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from flask import Flask, request, abort
@@ -15,20 +14,19 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
  
 ANTHROPIC_API_KEY   = os.environ["ANTHROPIC_API_KEY"]
-GMAIL_ADDRESS       = os.environ["GMAIL_ADDRESS"]         # your Gmail e.g. yourbot@gmail.com
-GMAIL_APP_PASSWORD  = os.environ["GMAIL_APP_PASSWORD"]    # Gmail App Password (not your real password)
-SMS_GATEWAY         = os.environ["SMS_GATEWAY"]           # e.g. 9292453610@tmomail.net
-MAILGUN_SANDBOX     = os.environ["MAILGUN_SANDBOX"]       # e.g. bot@sandbox51c4356966ad4dfdbb93.mailgun.org
+GMAIL_ADDRESS       = os.environ["GMAIL_ADDRESS"]
+GMAIL_APP_PASSWORD  = os.environ["GMAIL_APP_PASSWORD"]
+SMS_GATEWAY         = os.environ["SMS_GATEWAY"]
+MAILGUN_SANDBOX     = os.environ["MAILGUN_SANDBOX"]
 ALLOWED_GATEWAYS    = set(os.environ.get("ALLOWED_GATEWAYS", SMS_GATEWAY).split(","))
-MAILGUN_WEBHOOK_KEY = os.environ.get("MAILGUN_WEBHOOK_KEY", "")  # optional signing key
-SYSTEM_PROMPT      = os.environ.get("SYSTEM_PROMPT", "You are a helpful assistant. Keep replies concise (under 300 characters when possible) since responses are delivered via SMS.")
-MAX_HISTORY        = int(os.environ.get("MAX_HISTORY", "20"))
-MODEL              = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+MAILGUN_WEBHOOK_KEY = os.environ.get("MAILGUN_WEBHOOK_KEY", "")
+SYSTEM_PROMPT       = os.environ.get("SYSTEM_PROMPT", "You are a helpful assistant. Keep replies concise (under 300 characters when possible) since responses are delivered via SMS.")
+MAX_HISTORY         = int(os.environ.get("MAX_HISTORY", "20"))
+MODEL               = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
  
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
  
 # ── In-memory conversation store ───────────────────────────────────────────
-# Keyed by the sender's email/gateway address
 conversations: dict[str, list[dict]] = {}
  
  
@@ -48,22 +46,17 @@ def send_sms(to: str, body: str) -> None:
     msg = MIMEMultipart()
     msg["From"]     = GMAIL_ADDRESS
     msg["To"]       = to
-    msg["Subject"]  = ""   # carriers ignore subject; keep blank
-    msg["Reply-To"] = os.environ.get("MAILGUN_SANDBOX", GMAIL_ADDRESS)  # replies route back through Mailgun
+    msg["Subject"]  = ""
+    msg["Reply-To"] = MAILGUN_SANDBOX
     msg.attach(MIMEText(body, "plain"))
  
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
         server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
         server.sendmail(GMAIL_ADDRESS, to, msg.as_string())
-    logger.info("Sent SMS to %s: %s", to, body[:80])
+    logger.info("Sent SMS to %s: %s", to, body)
  
  
 def extract_body(form) -> str:
-    """
-    Pull the plain-text message body from a Mailgun inbound webhook.
-    Mailgun posts fields: stripped-text, body-plain, body-html, etc.
-    We prefer stripped-text (reply only, no quoted history).
-    """
     text = (
         form.get("stripped-text")
         or form.get("body-plain")
@@ -73,7 +66,6 @@ def extract_body(form) -> str:
  
  
 def extract_sender(form) -> str:
-    """Return the From address from the Mailgun webhook payload."""
     return form.get("sender") or form.get("From") or ""
  
  
@@ -85,7 +77,6 @@ def health():
  
 @app.route("/incoming", methods=["POST"])
 def incoming_email():
-    # ── Optional: verify Mailgun webhook signature ─────────────────────────
     if MAILGUN_WEBHOOK_KEY:
         import hmac
         import hashlib
@@ -101,32 +92,28 @@ def incoming_email():
             logger.warning("Invalid Mailgun signature — request rejected.")
             abort(403)
  
-    sender      = extract_sender(request.form)
-    user_text   = extract_body(request.form)
+    sender    = extract_sender(request.form)
+    user_text = extract_body(request.form)
  
     logger.info("Incoming from %s: %s", sender, user_text)
  
-    # ── Allowlist check ────────────────────────────────────────────────────
-    # T-Mobile sends replies FROM an address like 9292453610@tmomail.net
-    # Accept any address that contains one of our allowed gateway numbers
-    sender_allowed = any(
+    # Allow all if ALLOWED_GATEWAYS is "all", otherwise match sender
+    sender_allowed = "all" in ALLOWED_GATEWAYS or any(
         allowed.split("@")[0] in sender
         for allowed in ALLOWED_GATEWAYS
     )
     if not sender_allowed:
         logger.warning("Blocked sender: %s", sender)
-        return "OK", 200   # return 200 so Mailgun doesn't retry
+        return "OK", 200
  
     if not user_text:
         return "OK", 200
  
-    # ── Special commands ───────────────────────────────────────────────────
     if user_text.lower() in ("reset", "clear", "forget"):
         conversations.pop(sender, None)
         send_sms(SMS_GATEWAY, "Conversation cleared! Starting fresh.")
         return "OK", 200
  
-    # ── Build history and call Claude ──────────────────────────────────────
     add_to_history(sender, "user", user_text)
     history = get_history(sender)
  
@@ -144,7 +131,6 @@ def incoming_email():
  
     add_to_history(sender, "assistant", ai_reply)
  
-    # ── Send reply back via SMS gateway ───────────────────────────────────
     try:
         send_sms(SMS_GATEWAY, ai_reply)
     except Exception as e:
@@ -157,4 +143,3 @@ def incoming_email():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
- 
