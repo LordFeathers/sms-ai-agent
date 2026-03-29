@@ -104,7 +104,7 @@ def incoming_email():
     sender      = extract_sender(request.form)
     user_text   = extract_body(request.form)
  
-    logger.info("Incoming from %s: %s", sender, user_text[:80])
+    logger.info("Incoming from %s: %s", sender, user_text)
  
     # ── Allowlist check ────────────────────────────────────────────────────
     # T-Mobile sends replies FROM an address like 9292453610@tmomail.net
