@@ -6,11 +6,9 @@ from email.mime.multipart import MIMEMultipart
 from flask import Flask, request, abort
 import anthropic
  
-# ── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
  
-# ── App setup ──────────────────────────────────────────────────────────────
 app = Flask(__name__)
  
 ANTHROPIC_API_KEY   = os.environ["ANTHROPIC_API_KEY"]
@@ -26,7 +24,6 @@ MODEL               = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001"
  
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
  
-# ── In-memory conversation store ───────────────────────────────────────────
 conversations: dict[str, list[dict]] = {}
  
  
@@ -42,7 +39,6 @@ def add_to_history(sender: str, role: str, content: str) -> None:
  
  
 def send_sms(to: str, body: str) -> None:
-    """Send a message via Gmail SMTP → carrier email gateway."""
     msg = MIMEMultipart()
     msg["From"]     = GMAIL_ADDRESS
     msg["To"]       = to
@@ -57,6 +53,13 @@ def send_sms(to: str, body: str) -> None:
  
  
 def extract_body(form) -> str:
+    # Log all keys to debug what fields are available
+    logger.info("Form fields: %s", list(form.keys()))
+    for key in ["stripped-text", "body-plain", "body-html", "message-headers", "subject"]:
+        val = form.get(key, "")
+        if val:
+            logger.info("Field %s = %s", key, val[:200])
+ 
     text = (
         form.get("stripped-text")
         or form.get("body-plain")
@@ -69,7 +72,6 @@ def extract_sender(form) -> str:
     return form.get("sender") or form.get("From") or ""
  
  
-# ── Routes ─────────────────────────────────────────────────────────────────
 @app.route("/health")
 def health():
     return {"status": "ok"}, 200
@@ -97,7 +99,6 @@ def incoming_email():
  
     logger.info("Incoming from %s: %s", sender, user_text)
  
-    # Allow all if ALLOWED_GATEWAYS is "all", otherwise match sender
     sender_allowed = "all" in ALLOWED_GATEWAYS or any(
         allowed.split("@")[0] in sender
         for allowed in ALLOWED_GATEWAYS
@@ -107,6 +108,7 @@ def incoming_email():
         return "OK", 200
  
     if not user_text:
+        logger.warning("Empty body — skipping")
         return "OK", 200
  
     if user_text.lower() in ("reset", "clear", "forget"):
@@ -139,7 +141,7 @@ def incoming_email():
     return "OK", 200
  
  
-# ── Entry point ────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+ 
