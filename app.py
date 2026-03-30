@@ -1,9 +1,8 @@
 import os
 import logging
-import smtplib
 import json
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import urllib.request
+import urllib.parse
 from flask import Flask, request, abort
 import anthropic
 
@@ -14,9 +13,10 @@ app = Flask(__name__)
 
 ANTHROPIC_API_KEY   = os.environ["ANTHROPIC_API_KEY"]
 GMAIL_ADDRESS       = os.environ["GMAIL_ADDRESS"]
-GMAIL_APP_PASSWORD  = os.environ["GMAIL_APP_PASSWORD"]
 SMS_GATEWAY         = os.environ["SMS_GATEWAY"]
 MAILGUN_SANDBOX     = os.environ["MAILGUN_SANDBOX"]
+MAILGUN_API_KEY     = os.environ["MAILGUN_API_KEY"]
+MAILGUN_DOMAIN      = os.environ["MAILGUN_DOMAIN"]
 ALLOWED_GATEWAYS    = set(os.environ.get("ALLOWED_GATEWAYS", SMS_GATEWAY).split(","))
 MAILGUN_WEBHOOK_KEY = os.environ.get("MAILGUN_WEBHOOK_KEY", "")
 SYSTEM_PROMPT       = os.environ.get("SYSTEM_PROMPT", "You are a helpful assistant. Keep replies concise (under 300 characters when possible) since responses are delivered via SMS.")
@@ -40,31 +40,36 @@ def add_to_history(sender: str, role: str, content: str) -> None:
 
 
 def send_sms(to: str, body: str) -> None:
-    msg = MIMEMultipart()
-    msg["From"]     = GMAIL_ADDRESS
-    msg["To"]       = to
-    msg["Subject"]  = ""
-    msg["Reply-To"] = MAILGUN_SANDBOX
-    msg.attach(MIMEText(body, "plain"))
+    """Send via Mailgun API (HTTPS) → carrier email gateway."""
+    data = urllib.parse.urlencode({
+        "from": f"AI Assistant <{MAILGUN_SANDBOX}>",
+        "to": to,
+        "subject": "",
+        "text": body,
+        "h:Reply-To": MAILGUN_SANDBOX,
+    }).encode()
 
-    with smtplib.SMTP("smtp.gmail.com", 587) as server:
-        server.starttls()
-        server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        server.sendmail(GMAIL_ADDRESS, to, msg.as_string())
-    logger.info("Sent SMS to %s: %s", to, body)
+    # Basic auth: "api:your-mailgun-api-key"
+    import base64
+    credentials = base64.b64encode(f"api:{MAILGUN_API_KEY}".encode()).decode()
+
+    req = urllib.request.Request(
+        f"https://api.mailgun.net/v3/{MAILGUN_DOMAIN}/messages",
+        data=data,
+        headers={"Authorization": f"Basic {credentials}"},
+        method="POST"
+    )
+    with urllib.request.urlopen(req) as resp:
+        result = json.loads(resp.read())
+        logger.info("Mailgun send result: %s", result)
 
 
 def extract_body(form, files) -> str:
-    """Extract message text from form fields or uploaded attachments."""
-
-    # 1. Standard Mailgun direct fields
     for field in ["stripped-text", "body-plain"]:
         val = form.get(field, "").strip()
         if val:
             return val
 
-    # 2. T-Mobile sends SMS as MMS with text in a .txt attachment file
-    # Mailgun passes these as file uploads in request.files
     attachment_count = int(form.get("attachment-count", 0))
     for i in range(1, attachment_count + 1):
         file = files.get(f"attachment-{i}")
@@ -74,7 +79,6 @@ def extract_body(form, files) -> str:
                 logger.info("Extracted text from %s: %s", file.filename, text)
                 return text
 
-    # 3. Try body-html stripped of tags as last resort
     html = form.get("body-html", "").strip()
     if html:
         import re
