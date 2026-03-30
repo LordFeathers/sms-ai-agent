@@ -1,9 +1,7 @@
 import os
 import logging
 import json
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+import httpx
 from flask import Flask, request, abort
 import anthropic
 
@@ -42,19 +40,20 @@ def add_to_history(sender: str, role: str, content: str) -> None:
 
 
 def send_sms(to: str, body: str) -> None:
-    """Send via Gmail SMTP to carrier email gateway."""
-    msg = MIMEMultipart()
-    msg["From"]     = GMAIL_ADDRESS
-    msg["To"]       = to
-    msg["Subject"]  = ""
-    msg["Reply-To"] = MAILGUN_SANDBOX
-    msg.attach(MIMEText(body, "plain"))
-
-    with smtplib.SMTP("smtp.gmail.com", 587) as server:
-        server.ehlo()
-        server.starttls()
-        server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
-        server.sendmail(GMAIL_ADDRESS, to, msg.as_string())
+    """Send via Mailgun API to carrier email gateway."""
+    resp = httpx.post(
+        f"https://api.mailgun.net/v3/{MAILGUN_DOMAIN}/messages",
+        auth=("api", MAILGUN_API_KEY),
+        data={
+            "from":     GMAIL_ADDRESS,
+            "to":       to,
+            "subject":  "",
+            "text":     body,
+            "h:Reply-To": MAILGUN_SANDBOX,
+        },
+        timeout=30,
+    )
+    resp.raise_for_status()
     logger.info("Sent SMS to %s: %s", to, body)
 
 
