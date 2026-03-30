@@ -47,7 +47,6 @@ def send_sms(to: str, body: str) -> None:
         data={
             "from":     GMAIL_ADDRESS,
             "to":       to,
-            "subject":  "",
             "text":     body,
             "h:Reply-To": MAILGUN_SANDBOX,
         },
