@@ -1,6 +1,9 @@
 import os
+import re
 import logging
 import json
+import hmac
+import hashlib
 import httpx
 from flask import Flask, request, abort
 import anthropic
@@ -19,9 +22,25 @@ MAILGUN_API_KEY     = os.environ.get("MAILGUN_API_KEY", "")
 MAILGUN_DOMAIN      = os.environ.get("MAILGUN_DOMAIN", "")
 ALLOWED_GATEWAYS    = set(os.environ.get("ALLOWED_GATEWAYS", SMS_GATEWAY).split(","))
 MAILGUN_WEBHOOK_KEY = os.environ.get("MAILGUN_WEBHOOK_KEY", "")
-SYSTEM_PROMPT       = os.environ.get("SYSTEM_PROMPT", "You are a helpful assistant. Keep replies concise (under 300 characters when possible) since responses are delivered via SMS.")
 MAX_HISTORY         = int(os.environ.get("MAX_HISTORY", "20"))
 MODEL               = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a helpful SMS assistant. Always follow these rules:\n"
+    "1. Keep replies under 160 characters. This is a hard limit — responses longer than 160 characters get cut off.\n"
+    "2. Never use markdown. No asterisks, bold, italics, headers, bullet points, or backticks. Plain text only.\n"
+    "3. Be direct. Skip filler phrases like 'Certainly!' or 'Great question!'.\n"
+    "4. If listing things, use plain numbered lines.\n"
+    "5. For long answers, give the most important info first and cut the rest."
+)
+SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
+
+HELP_TEXT = (
+    "Commands:\n"
+    "help - show this list\n"
+    "ping - check if bot is online\n"
+    "reset - clear conversation history"
+)
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -37,6 +56,51 @@ def add_to_history(sender: str, role: str, content: str) -> None:
     history.append({"role": role, "content": content})
     if len(history) > MAX_HISTORY:
         conversations[sender] = history[-MAX_HISTORY:]
+
+
+SMS_CHAR_LIMIT = 160
+
+def strip_markdown(text: str) -> str:
+    """Remove markdown formatting that renders as literal symbols in SMS."""
+    # Remove code blocks
+    text = re.sub(r'```[\s\S]*?```', '', text)
+    # Remove bold/italic (**, *, __, _)
+    text = re.sub(r'\*{1,3}([^*\n]+)\*{1,3}', r'\1', text)
+    text = re.sub(r'_{1,3}([^_\n]+)_{1,3}', r'\1', text)
+    # Remove headers
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    # Remove inline code
+    text = re.sub(r'`([^`\n]+)`', r'\1', text)
+    # Normalize markdown bullets to dashes
+    text = re.sub(r'^\s*[*•]\s+', '- ', text, flags=re.MULTILINE)
+    # Collapse excess blank lines
+    text = re.sub(r'\n{3,}', '\n\n', text)
+    return text.strip()
+
+
+def sanitize_for_sms(text: str) -> str:
+    """Replace non-GSM-7 characters to keep encoding at 160 chars/segment."""
+    replacements = {
+        '\u2018': "'", '\u2019': "'",   # curly single quotes
+        '\u201c': '"', '\u201d': '"',   # curly double quotes
+        '\u2013': '-', '\u2014': '-',   # en/em dash
+        '\u2026': '...',                # ellipsis
+        '\u00a0': ' ',                  # non-breaking space
+    }
+    for orig, replacement in replacements.items():
+        text = text.replace(orig, replacement)
+    # Drop any remaining non-ASCII that would force UCS-2 encoding
+    text = text.encode('ascii', errors='ignore').decode('ascii')
+    return text
+
+
+def truncate_for_sms(text: str) -> str:
+    """Hard-cap at SMS_CHAR_LIMIT characters, breaking at a word boundary."""
+    if len(text) <= SMS_CHAR_LIMIT:
+        return text
+    truncated = text[:SMS_CHAR_LIMIT - 3].rsplit(' ', 1)[0]
+    logger.warning("Response truncated from %d to %d chars", len(text), len(truncated) + 3)
+    return truncated + "..."
 
 
 def send_sms(to: str, body: str) -> None:
@@ -82,7 +146,6 @@ def extract_body(form, files) -> str:
 
     html = form.get("body-html", "").strip()
     if html:
-        import re
         text = re.sub(r'<[^>]+>', ' ', html).strip()
         text = re.sub(r'\s+', ' ', text).strip()
         if text:
@@ -93,9 +156,7 @@ def extract_body(form, files) -> str:
 
 
 def extract_sender(form) -> str:
-    import re
     raw = form.get("sender") or form.get("From") or ""
-    # Normalize "Display Name <addr@example.com>" → "addr@example.com"
     match = re.search(r'<([^>]+)>', raw)
     return match.group(1).strip() if match else raw.strip()
 
@@ -108,8 +169,6 @@ def health():
 @app.route("/incoming", methods=["POST"])
 def incoming_email():
     if MAILGUN_WEBHOOK_KEY:
-        import hmac
-        import hashlib
         token     = request.form.get("token", "")
         timestamp = request.form.get("timestamp", "")
         signature = request.form.get("signature", "")
@@ -139,9 +198,19 @@ def incoming_email():
         logger.warning("Empty body — skipping")
         return "OK", 200
 
-    if user_text.lower() in ("reset", "clear", "forget"):
+    command = user_text.lower().strip()
+
+    if command in ("reset", "clear", "forget"):
         conversations.pop(sender, None)
-        send_sms(SMS_GATEWAY, "Conversation cleared! Starting fresh.")
+        send_sms(SMS_GATEWAY, "Conversation cleared. Starting fresh.")
+        return "OK", 200
+
+    if command == "help":
+        send_sms(SMS_GATEWAY, HELP_TEXT)
+        return "OK", 200
+
+    if command == "ping":
+        send_sms(SMS_GATEWAY, "Pong! Bot is online.")
         return "OK", 200
 
     add_to_history(sender, "user", user_text)
@@ -155,7 +224,7 @@ def incoming_email():
             messages=history,
             timeout=30,
         )
-        ai_reply = response.content[0].text.strip()
+        ai_reply = truncate_for_sms(sanitize_for_sms(strip_markdown(response.content[0].text)))
     except anthropic.APIError as e:
         logger.error("Anthropic API error: %s", e)
         ai_reply = "Sorry, I ran into an issue. Please try again."
