@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 ANTHROPIC_API_KEY   = os.environ["ANTHROPIC_API_KEY"]
 GMAIL_ADDRESS       = os.environ["GMAIL_ADDRESS"]
-GMAIL_APP_PASSWORD  = os.environ["GMAIL_APP_PASSWORD"]
+GMAIL_APP_PASSWORD  = os.environ.get("GMAIL_APP_PASSWORD", "")  # unused legacy variable
 SMS_GATEWAY         = os.environ["SMS_GATEWAY"]
 MAILGUN_SANDBOX     = os.environ["MAILGUN_SANDBOX"]
 MAILGUN_API_KEY     = os.environ.get("MAILGUN_API_KEY", "")

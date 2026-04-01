@@ -160,7 +160,7 @@ Send these as a text to control the bot:
 |---|---|---|
 | `ANTHROPIC_API_KEY` | Yes | Anthropic API key from console.anthropic.com |
 | `GMAIL_ADDRESS` | Yes | The "from" email address used when sending via Mailgun |
-| `GMAIL_APP_PASSWORD` | Yes | Legacy — no longer used, but still required to be set |
+| `GMAIL_APP_PASSWORD` | No | Legacy — unused, can be omitted |
 | `SMS_GATEWAY` | Yes | Your phone's carrier email gateway (e.g. `5551234567@txt.att.net`) |
 | `MAILGUN_SANDBOX` | Yes | Your Mailgun postmaster address (used as Reply-To) |
 | `MAILGUN_API_KEY` | Yes | Mailgun API key |
