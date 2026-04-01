@@ -41,24 +41,32 @@ def add_to_history(sender: str, role: str, content: str) -> None:
 
 def send_sms(to: str, body: str) -> None:
     """Send via Mailgun API to carrier email gateway."""
-    resp = httpx.post(
-        f"https://api.mailgun.net/v3/{MAILGUN_DOMAIN}/messages",
-        auth=("api", MAILGUN_API_KEY),
-        data={
-            "from":     GMAIL_ADDRESS,
-            "to":       to,
-            "subject":  "",
-            "text":     body,
-            "h:Reply-To": MAILGUN_SANDBOX,
-        },
-        timeout=30,
-    )
-    resp.raise_for_status()
-    logger.info("Sent SMS to %s: %s", to, body)
+    last_exc = None
+    for attempt in range(2):
+        try:
+            resp = httpx.post(
+                f"https://api.mailgun.net/v3/{MAILGUN_DOMAIN}/messages",
+                auth=("api", MAILGUN_API_KEY),
+                data={
+                    "from":     GMAIL_ADDRESS,
+                    "to":       to,
+                    "subject":  "",
+                    "text":     body,
+                    "h:Reply-To": MAILGUN_SANDBOX,
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            logger.info("Sent SMS to %s: %s", to, body)
+            return
+        except Exception as e:
+            last_exc = e
+            logger.warning("send_sms attempt %d failed: %s", attempt + 1, e)
+    raise last_exc
 
 
 def extract_body(form, files) -> str:
-    for field in ["stripped-text", "body-plain"]:
+    for field in ["stripped-text", "body-plain", "Subject", "subject"]:
         val = form.get(field, "").strip()
         if val:
             return val
@@ -80,11 +88,16 @@ def extract_body(form, files) -> str:
         if text:
             return text
 
+    logger.warning("Could not extract body. Available form fields: %s", list(form.keys()))
     return ""
 
 
 def extract_sender(form) -> str:
-    return form.get("sender") or form.get("From") or ""
+    import re
+    raw = form.get("sender") or form.get("From") or ""
+    # Normalize "Display Name <addr@example.com>" → "addr@example.com"
+    match = re.search(r'<([^>]+)>', raw)
+    return match.group(1).strip() if match else raw.strip()
 
 
 @app.route("/health")
@@ -140,6 +153,7 @@ def incoming_email():
             max_tokens=400,
             system=SYSTEM_PROMPT,
             messages=history,
+            timeout=30,
         )
         ai_reply = response.content[0].text.strip()
     except anthropic.APIError as e:
