@@ -85,7 +85,7 @@ pip install -r requirements.txt
 
 ### 3. Configure environment variables
 
-Create a `.env` file (never commit this) or set these in your hosting dashboard:
+Create a `.env` file or set these in your hosting dashboard:
 
 ```env
 # Required
