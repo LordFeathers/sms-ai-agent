@@ -39,8 +39,12 @@ HELP_TEXT = (
     "Commands:\n"
     "help - show this list\n"
     "ping - check if bot is online\n"
+    "model - show active AI model\n"
+    "about - about this bot\n"
     "reset - clear conversation history"
 )
+
+ABOUT_TEXT = "AI assistant powered by Claude. Replies via SMS. Text 'help' for commands."
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -211,6 +215,14 @@ def incoming_email():
 
     if command == "ping":
         send_sms(SMS_GATEWAY, "Pong! Bot is online.")
+        return "OK", 200
+
+    if command == "model":
+        send_sms(SMS_GATEWAY, f"Model: {MODEL}")
+        return "OK", 200
+
+    if command == "about":
+        send_sms(SMS_GATEWAY, ABOUT_TEXT)
         return "OK", 200
 
     add_to_history(sender, "user", user_text)
