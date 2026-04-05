@@ -47,7 +47,12 @@ HELP_TEXT = (
     "resetprofile - forget all saved facts"
 )
 
-ABOUT_TEXT = "AI assistant powered by Claude. Replies via SMS. Text 'help' for commands."
+ABOUT_TEXT = (
+    "Made by Yaakov Sassoon. Powered by Claude AI (Haiku). "
+    "Runs on Railway, sends SMS via Mailgun. "
+    "Remembers your conversation and learns facts about you over time. "
+    "Text 'help' for commands."
+)
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
