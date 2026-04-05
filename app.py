@@ -4,6 +4,7 @@ import logging
 import json
 import hmac
 import hashlib
+import threading
 import httpx
 from flask import Flask, request, abort
 import anthropic
@@ -41,7 +42,9 @@ HELP_TEXT = (
     "ping - check if bot is online\n"
     "model - show active AI model\n"
     "about - about this bot\n"
-    "reset - clear conversation history"
+    "profile - show remembered facts\n"
+    "reset - clear conversation history\n"
+    "resetprofile - forget all saved facts"
 )
 
 ABOUT_TEXT = "AI assistant powered by Claude. Replies via SMS. Text 'help' for commands."
@@ -57,6 +60,7 @@ else:
     logger.info("No REDIS_URL set — using in-memory conversation storage")
 
 _local_conversations: dict[str, list[dict]] = {}
+_local_profiles: dict[str, dict] = {}
 
 
 def get_history(sender: str) -> list[dict]:
@@ -82,6 +86,58 @@ def clear_history(sender: str) -> None:
         _redis.delete(f"conv:{sender}")
     else:
         _local_conversations.pop(sender, None)
+
+
+def get_profile(sender: str) -> dict:
+    if _redis:
+        raw = _redis.get(f"profile:{sender}")
+        return json.loads(raw) if raw else {}
+    return _local_profiles.get(sender, {})
+
+
+def save_profile(sender: str, profile: dict) -> None:
+    if _redis:
+        _redis.set(f"profile:{sender}", json.dumps(profile))
+    else:
+        _local_profiles[sender] = profile
+
+
+def extract_facts_background(sender: str, user_text: str, ai_reply: str) -> None:
+    """Run in a background thread: extract user facts and merge into profile."""
+    try:
+        existing = get_profile(sender)
+        existing_str = json.dumps(existing) if existing else "{}"
+        response = claude.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=300,
+            system=(
+                "Extract personal facts about the user from the conversation snippet below. "
+                "Return ONLY a JSON object with any of these keys if mentioned: "
+                "name, location, address, email, phone, occupation, age, preferences, family, other. "
+                "Only include facts the user explicitly stated. "
+                "If nothing new, return {}. No explanation, just JSON."
+            ),
+            messages=[
+                {"role": "user", "content": (
+                    f"Existing profile: {existing_str}\n\n"
+                    f"User said: {user_text}\n"
+                    f"Assistant replied: {ai_reply}\n\n"
+                    "What new facts about the user can be extracted? Return updated JSON only."
+                )}
+            ],
+            timeout=15,
+        )
+        raw = response.content[0].text.strip()
+        # Pull out JSON if wrapped in markdown code block
+        match = re.search(r'\{[\s\S]*\}', raw)
+        if match:
+            facts = json.loads(match.group())
+            if facts:
+                existing.update(facts)
+                save_profile(sender, existing)
+                logger.info("Updated profile for %s: %s", sender, existing)
+    except Exception as e:
+        logger.warning("Fact extraction failed: %s", e)
 
 
 SMS_CHAR_LIMIT = 1600
@@ -240,6 +296,11 @@ def incoming_email():
         send_sms(SMS_GATEWAY, "Conversation cleared. Starting fresh.")
         return "OK", 200
 
+    if command == "resetprofile":
+        save_profile(sender, {})
+        send_sms(SMS_GATEWAY, "Profile cleared. I no longer remember any facts about you.")
+        return "OK", 200
+
     if command == "help":
         send_sms(SMS_GATEWAY, HELP_TEXT)
         return "OK", 200
@@ -256,14 +317,30 @@ def incoming_email():
         send_sms(SMS_GATEWAY, ABOUT_TEXT)
         return "OK", 200
 
+    if command == "profile":
+        profile = get_profile(sender)
+        if profile:
+            facts = ", ".join(f"{k}: {v}" for k, v in profile.items())
+            send_sms(SMS_GATEWAY, f"What I know about you: {facts}")
+        else:
+            send_sms(SMS_GATEWAY, "I don't have any facts saved about you yet.")
+        return "OK", 200
+
     add_to_history(sender, "user", user_text)
     history = get_history(sender)
+
+    # Build system prompt, injecting known user facts if available
+    profile = get_profile(sender)
+    system = SYSTEM_PROMPT
+    if profile:
+        facts = ", ".join(f"{k}: {v}" for k, v in profile.items())
+        system += f"\n\nKnown facts about this user: {facts}"
 
     try:
         response = claude.messages.create(
             model=MODEL,
             max_tokens=1024,
-            system=SYSTEM_PROMPT,
+            system=system,
             messages=history,
             timeout=30,
         )
@@ -273,6 +350,13 @@ def incoming_email():
         ai_reply = "Sorry, I ran into an issue. Please try again."
 
     add_to_history(sender, "assistant", ai_reply)
+
+    # Extract and save user facts in the background (no delay to SMS response)
+    threading.Thread(
+        target=extract_facts_background,
+        args=(sender, user_text, ai_reply),
+        daemon=True,
+    ).start()
 
     try:
         for part in split_for_sms(ai_reply):
