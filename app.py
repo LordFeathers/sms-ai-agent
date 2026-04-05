@@ -31,6 +31,7 @@ MAX_HISTORY         = int(os.environ.get("MAX_HISTORY", "20"))
 MODEL               = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 TIMEZONE             = os.environ.get("TIMEZONE", "America/New_York")
+GOOGLE_MAPS_API_KEY  = os.environ.get("GOOGLE_MAPS_API_KEY", "")
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a personal AI assistant replying via SMS. Always follow these rules:\n"
@@ -38,8 +39,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "2. Be direct and conversational. No filler phrases like 'Certainly!' or 'Great question!'.\n"
     "3. Use numbered lines for lists.\n"
     "4. Give complete answers. Long replies are split into multiple messages automatically.\n"
-    "5. Use Google Search for anything real-time: weather, news, prices, hours, transit, directions, scores, etc. Always search before saying you don't know something current.\n"
-    "6. For directions, default to public transit unless the user says otherwise.\n"
+    "5. Use Google Search for anything real-time: weather, news, prices, hours, transit, scores, etc. Always search before saying you don't know something current.\n"
+    "6. For directions, use the get_directions tool for precise step-by-step routes. Default to public transit unless the user says otherwise.\n"
     "7. You can run code to do math, unit conversions, calculations, or data analysis — use it.\n"
     "8. If the user shares a URL, read it and summarize or answer questions about it.\n"
     "9. Use what you know about the user (provided below) to personalize answers. Use their name if known, use their location for local questions."
@@ -58,7 +59,7 @@ HELP_TEXT = (
 )
 
 ABOUT_TEXT = (
-    "Made by Yaakov Sassoon. Powered by Gemini AI with real-time Google Search. "
+    "Made by Yaakov Sassoon. Powered by Gemini AI with real-time Google Search and Google Maps. "
     "Runs on Railway, sends SMS via Mailgun. "
     "Remembers your conversation and learns facts about you over time. "
     "Text 'help' for commands."
@@ -126,6 +127,57 @@ def history_to_gemini(history: list[dict]) -> list[types.Content]:
     return contents
 
 
+def get_directions(origin: str, destination: str, mode: str = "transit") -> str:
+    """Get step-by-step directions using Google Maps.
+
+    Args:
+        origin: Starting address or location.
+        destination: Destination address or location.
+        mode: Travel mode — transit, walking, driving, or bicycling. Default: transit.
+
+    Returns:
+        Step-by-step directions with times and transit details.
+    """
+    if not GOOGLE_MAPS_API_KEY:
+        return "Google Maps API key not configured."
+    try:
+        resp = httpx.get(
+            "https://maps.googleapis.com/maps/api/directions/json",
+            params={
+                "origin": origin,
+                "destination": destination,
+                "mode": mode,
+                "alternatives": "false",
+                "key": GOOGLE_MAPS_API_KEY,
+            },
+            timeout=10,
+        )
+        data = resp.json()
+        if data["status"] != "OK":
+            return f"No directions found ({data['status']})."
+        leg = data["routes"][0]["legs"][0]
+        lines = [
+            f"{leg['start_address']} to {leg['end_address']}",
+            f"Total: {leg['distance']['text']}, {leg['duration']['text']}",
+        ]
+        for step in leg["steps"]:
+            text = re.sub(r"<[^>]+>", "", step["html_instructions"])
+            transit = step.get("transit_details")
+            if transit:
+                line_name = (transit.get("line", {}).get("short_name")
+                             or transit.get("line", {}).get("name", ""))
+                dep = transit.get("departure_stop", {}).get("name", "")
+                arr = transit.get("arrival_stop", {}).get("name", "")
+                dep_time = transit.get("departure_time", {}).get("text", "")
+                num_stops = transit.get("num_stops", "")
+                text = f"Take {line_name} from {dep} ({dep_time}) to {arr} — {num_stops} stops"
+            lines.append(f"- {text} ({step['distance']['text']})")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.warning("Maps API error: %s", e)
+        return f"Could not get directions: {e}"
+
+
 def call_gemini(system: str, history: list[dict]) -> str:
     """Call Gemini with conversation history, date/time context, and all tools."""
     now = datetime.now(ZoneInfo(TIMEZONE))
@@ -140,6 +192,7 @@ def call_gemini(system: str, history: list[dict]) -> str:
                 types.Tool(google_search=types.GoogleSearch()),
                 types.Tool(code_execution=types.ToolCodeExecution()),
                 types.Tool(url_context=types.UrlContext()),
+                get_directions,
             ],
         ),
     )
