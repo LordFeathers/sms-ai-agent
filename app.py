@@ -27,11 +27,10 @@ MODEL               = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001"
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful SMS assistant. Always follow these rules:\n"
-    "1. Keep replies under 160 characters. This is a hard limit — responses longer than 160 characters get cut off.\n"
-    "2. Never use markdown. No asterisks, bold, italics, headers, bullet points, or backticks. Plain text only.\n"
-    "3. Be direct. Skip filler phrases like 'Certainly!' or 'Great question!'.\n"
-    "4. If listing things, use plain numbered lines.\n"
-    "5. For long answers, give the most important info first and cut the rest."
+    "1. Never use markdown. No asterisks, bold, italics, headers, bullet points, or backticks. Plain text only.\n"
+    "2. Be direct. Skip filler phrases like 'Certainly!' or 'Great question!'.\n"
+    "3. If listing things, use plain numbered lines.\n"
+    "4. Give complete answers. Long replies are automatically split into multiple messages."
 )
 SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
 
@@ -62,7 +61,7 @@ def add_to_history(sender: str, role: str, content: str) -> None:
         conversations[sender] = history[-MAX_HISTORY:]
 
 
-SMS_CHAR_LIMIT = 160
+SMS_CHAR_LIMIT = 1600
 
 def strip_markdown(text: str) -> str:
     """Remove markdown formatting that renders as literal symbols in SMS."""
@@ -98,13 +97,22 @@ def sanitize_for_sms(text: str) -> str:
     return text
 
 
-def truncate_for_sms(text: str) -> str:
-    """Hard-cap at SMS_CHAR_LIMIT characters, breaking at a word boundary."""
+def split_for_sms(text: str) -> list[str]:
+    """Split text into SMS_CHAR_LIMIT-sized chunks at word boundaries."""
     if len(text) <= SMS_CHAR_LIMIT:
-        return text
-    truncated = text[:SMS_CHAR_LIMIT - 3].rsplit(' ', 1)[0]
-    logger.warning("Response truncated from %d to %d chars", len(text), len(truncated) + 3)
-    return truncated + "..."
+        return [text]
+    parts = []
+    remaining = text
+    while len(remaining) > SMS_CHAR_LIMIT:
+        chunk = remaining[:SMS_CHAR_LIMIT].rsplit(' ', 1)[0]
+        if not chunk:
+            chunk = remaining[:SMS_CHAR_LIMIT]
+        parts.append(chunk)
+        remaining = remaining[len(chunk):].lstrip()
+    if remaining:
+        parts.append(remaining)
+    logger.info("Split response into %d SMS parts", len(parts))
+    return parts
 
 
 def send_sms(to: str, body: str) -> None:
@@ -231,12 +239,12 @@ def incoming_email():
     try:
         response = claude.messages.create(
             model=MODEL,
-            max_tokens=400,
+            max_tokens=1024,
             system=SYSTEM_PROMPT,
             messages=history,
             timeout=30,
         )
-        ai_reply = truncate_for_sms(sanitize_for_sms(strip_markdown(response.content[0].text)))
+        ai_reply = sanitize_for_sms(strip_markdown(response.content[0].text))
     except anthropic.APIError as e:
         logger.error("Anthropic API error: %s", e)
         ai_reply = "Sorry, I ran into an issue. Please try again."
@@ -244,7 +252,8 @@ def incoming_email():
     add_to_history(sender, "assistant", ai_reply)
 
     try:
-        send_sms(SMS_GATEWAY, ai_reply)
+        for part in split_for_sms(ai_reply):
+            send_sms(SMS_GATEWAY, part)
     except Exception as e:
         logger.error("Failed to send SMS: %s", e)
 
