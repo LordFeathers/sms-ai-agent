@@ -28,7 +28,7 @@ MAILGUN_DOMAIN      = os.environ.get("MAILGUN_DOMAIN", "")
 ALLOWED_GATEWAYS    = set(os.environ.get("ALLOWED_GATEWAYS", SMS_GATEWAY).split(","))
 MAILGUN_WEBHOOK_KEY = os.environ.get("MAILGUN_WEBHOOK_KEY", "")
 MAX_HISTORY         = int(os.environ.get("MAX_HISTORY", "20"))
-MODEL               = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-lite")
+MODEL               = os.environ.get("GEMINI_MODEL", "gemini-1.5-flash")
 
 TIMEZONE             = os.environ.get("TIMEZONE", "America/New_York")
 
@@ -64,7 +64,10 @@ ABOUT_TEXT = (
     "Text 'help' for commands."
 )
 
-gemini_client = genai.Client(api_key=GEMINI_API_KEY)
+gemini_client = genai.Client(
+    api_key=GEMINI_API_KEY,
+    http_options=types.HttpOptions(api_version="v1"),
+)
 
 REDIS_URL = os.environ.get("REDIS_URL", "")
 _redis: redis.Redis | None = None
