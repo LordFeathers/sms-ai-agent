@@ -7,6 +7,7 @@ import hashlib
 import httpx
 from flask import Flask, request, abort
 import anthropic
+import redis
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -47,18 +48,40 @@ ABOUT_TEXT = "AI assistant powered by Claude. Replies via SMS. Text 'help' for c
 
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-conversations: dict[str, list[dict]] = {}
+REDIS_URL = os.environ.get("REDIS_URL", "")
+_redis: redis.Redis | None = None
+if REDIS_URL:
+    _redis = redis.Redis.from_url(REDIS_URL, decode_responses=True)
+    logger.info("Using Redis for conversation persistence")
+else:
+    logger.info("No REDIS_URL set — using in-memory conversation storage")
+
+_local_conversations: dict[str, list[dict]] = {}
 
 
 def get_history(sender: str) -> list[dict]:
-    return conversations.setdefault(sender, [])
+    if _redis:
+        raw = _redis.get(f"conv:{sender}")
+        return json.loads(raw) if raw else []
+    return _local_conversations.setdefault(sender, [])
 
 
 def add_to_history(sender: str, role: str, content: str) -> None:
     history = get_history(sender)
     history.append({"role": role, "content": content})
     if len(history) > MAX_HISTORY:
-        conversations[sender] = history[-MAX_HISTORY:]
+        history = history[-MAX_HISTORY:]
+    if _redis:
+        _redis.set(f"conv:{sender}", json.dumps(history))
+    else:
+        _local_conversations[sender] = history
+
+
+def clear_history(sender: str) -> None:
+    if _redis:
+        _redis.delete(f"conv:{sender}")
+    else:
+        _local_conversations.pop(sender, None)
 
 
 SMS_CHAR_LIMIT = 1600
@@ -213,7 +236,7 @@ def incoming_email():
     command = user_text.lower().strip()
 
     if command in ("reset", "clear", "forget"):
-        conversations.pop(sender, None)
+        clear_history(sender)
         send_sms(SMS_GATEWAY, "Conversation cleared. Starting fresh.")
         return "OK", 200
 
