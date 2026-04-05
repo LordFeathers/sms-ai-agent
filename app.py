@@ -5,6 +5,8 @@ import json
 import hmac
 import hashlib
 import threading
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import httpx
 from flask import Flask, request, abort
 from google import genai
@@ -28,13 +30,19 @@ MAILGUN_WEBHOOK_KEY = os.environ.get("MAILGUN_WEBHOOK_KEY", "")
 MAX_HISTORY         = int(os.environ.get("MAX_HISTORY", "20"))
 MODEL               = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
+TIMEZONE             = os.environ.get("TIMEZONE", "America/New_York")
+
 DEFAULT_SYSTEM_PROMPT = (
-    "You are a helpful SMS assistant. Always follow these rules:\n"
-    "1. Never use markdown. No asterisks, bold, italics, headers, bullet points, or backticks. Plain text only.\n"
-    "2. Be direct. Skip filler phrases like 'Certainly!' or 'Great question!'.\n"
-    "3. If listing things, use plain numbered lines.\n"
-    "4. Give complete answers. Long replies are automatically split into multiple messages.\n"
-    "5. You have access to Google Search — use it for real-time info like directions, schedules, weather, news, etc."
+    "You are a personal AI assistant replying via SMS. Always follow these rules:\n"
+    "1. Plain text only. No markdown, asterisks, bold, italics, headers, bullets, or backticks.\n"
+    "2. Be direct and conversational. No filler phrases like 'Certainly!' or 'Great question!'.\n"
+    "3. Use numbered lines for lists.\n"
+    "4. Give complete answers. Long replies are split into multiple messages automatically.\n"
+    "5. Use Google Search for anything real-time: weather, news, prices, hours, transit, directions, scores, etc. Always search before saying you don't know something current.\n"
+    "6. For directions, default to public transit unless the user says otherwise.\n"
+    "7. You can run code to do math, unit conversions, calculations, or data analysis — use it.\n"
+    "8. If the user shares a URL, read it and summarize or answer questions about it.\n"
+    "9. Use what you know about the user (provided below) to personalize answers. Use their name if known, use their location for local questions."
 )
 SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
 
@@ -119,13 +127,20 @@ def history_to_gemini(history: list[dict]) -> list[types.Content]:
 
 
 def call_gemini(system: str, history: list[dict]) -> str:
-    """Call Gemini with conversation history and Google Search grounding."""
+    """Call Gemini with conversation history, date/time context, and all tools."""
+    now = datetime.now(ZoneInfo(TIMEZONE))
+    datetime_str = now.strftime("%A, %B %d, %Y %I:%M %p %Z")
+    system_with_time = f"Current date and time: {datetime_str}\n\n{system}"
     response = gemini_client.models.generate_content(
         model=MODEL,
         contents=history_to_gemini(history),
         config=types.GenerateContentConfig(
-            system_instruction=system,
-            tools=[types.Tool(google_search=types.GoogleSearch())],
+            system_instruction=system_with_time,
+            tools=[
+                types.Tool(google_search=types.GoogleSearch()),
+                types.Tool(code_execution=types.ToolCodeExecution()),
+                types.Tool(url_context=types.UrlContext()),
+            ],
         ),
     )
     return response.text
