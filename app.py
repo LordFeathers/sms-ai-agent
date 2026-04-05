@@ -41,7 +41,7 @@ DEFAULT_SYSTEM_PROMPT = (
     "4. Give complete answers. Long replies are split into multiple messages automatically.\n"
     "5. Use Google Search for anything real-time: weather, news, prices, hours, transit, scores, etc. Always search before saying you don't know something current.\n"
     "6. For directions, use the get_directions tool for precise step-by-step routes. Default to public transit unless the user says otherwise.\n"
-    "7. If the user shares a URL, read it and summarize or answer questions about it.\n"
+    "7. If the user shares a URL, use fetch_url to read it and summarize or answer questions about it.\n"
     "8. Use what you know about the user (provided below) to personalize answers. Use their name if known, use their location for local questions."
 )
 SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
@@ -126,6 +126,30 @@ def history_to_gemini(history: list[dict]) -> list[types.Content]:
     return contents
 
 
+def fetch_url(url: str) -> str:
+    """Fetch and return the text content of a web page.
+
+    Args:
+        url: The URL to fetch and read.
+
+    Returns:
+        The readable text content of the page, up to 5000 characters.
+    """
+    try:
+        resp = httpx.get(
+            url, timeout=10, follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        resp.raise_for_status()
+        text = re.sub(r'<style[^>]*>[\s\S]*?</style>', '', resp.text, flags=re.IGNORECASE)
+        text = re.sub(r'<script[^>]*>[\s\S]*?</script>', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'<[^>]+>', ' ', text)
+        text = re.sub(r'\s+', ' ', text).strip()
+        return text[:5000] if len(text) > 5000 else text
+    except Exception as e:
+        return f"Could not fetch URL: {e}"
+
+
 def get_directions(origin: str, destination: str, mode: str = "transit") -> str:
     """Get step-by-step directions using Google Maps.
 
@@ -190,6 +214,7 @@ def call_gemini(system: str, history: list[dict]) -> str:
             tools=[
                 types.Tool(google_search=types.GoogleSearch()),
                 get_directions,
+                fetch_url,
             ],
         ),
     )
