@@ -41,9 +41,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "4. Give complete answers. Long replies are split into multiple messages automatically.\n"
     "5. Use Google Search for anything real-time: weather, news, prices, hours, transit, scores, etc. Always search before saying you don't know something current.\n"
     "6. For directions, use the get_directions tool for precise step-by-step routes. Default to public transit unless the user says otherwise.\n"
-    "7. You can run code to do math, unit conversions, calculations, or data analysis — use it.\n"
-    "8. If the user shares a URL, read it and summarize or answer questions about it.\n"
-    "9. Use what you know about the user (provided below) to personalize answers. Use their name if known, use their location for local questions."
+    "7. If the user shares a URL, read it and summarize or answer questions about it.\n"
+    "8. Use what you know about the user (provided below) to personalize answers. Use their name if known, use their location for local questions."
 )
 SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
 
@@ -190,7 +189,7 @@ def call_gemini(system: str, history: list[dict]) -> str:
             system_instruction=system_with_time,
             tools=[
                 types.Tool(google_search=types.GoogleSearch()),
-                types.Tool(code_execution=types.ToolCodeExecution()),
+
                 types.Tool(url_context=types.UrlContext()),
                 get_directions,
             ],
@@ -222,7 +221,7 @@ def extract_facts_background(sender: str, user_text: str, ai_reply: str) -> None
                 ),
                 tools=[
                     types.Tool(google_search=types.GoogleSearch()),
-                    types.Tool(code_execution=types.ToolCodeExecution()),
+    
                     types.Tool(url_context=types.UrlContext()),
                 ],
             ),
