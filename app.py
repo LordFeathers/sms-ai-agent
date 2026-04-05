@@ -7,7 +7,8 @@ import hashlib
 import threading
 import httpx
 from flask import Flask, request, abort
-import anthropic
+from google import genai
+from google.genai import types
 import redis
 
 logging.basicConfig(level=logging.INFO)
@@ -15,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
-ANTHROPIC_API_KEY   = os.environ["ANTHROPIC_API_KEY"]
+GEMINI_API_KEY      = os.environ["GEMINI_API_KEY"]
 GMAIL_ADDRESS       = os.environ["GMAIL_ADDRESS"]
 GMAIL_APP_PASSWORD  = os.environ.get("GMAIL_APP_PASSWORD", "")  # unused legacy variable
 SMS_GATEWAY         = os.environ["SMS_GATEWAY"]
@@ -25,14 +26,15 @@ MAILGUN_DOMAIN      = os.environ.get("MAILGUN_DOMAIN", "")
 ALLOWED_GATEWAYS    = set(os.environ.get("ALLOWED_GATEWAYS", SMS_GATEWAY).split(","))
 MAILGUN_WEBHOOK_KEY = os.environ.get("MAILGUN_WEBHOOK_KEY", "")
 MAX_HISTORY         = int(os.environ.get("MAX_HISTORY", "20"))
-MODEL               = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+MODEL               = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a helpful SMS assistant. Always follow these rules:\n"
     "1. Never use markdown. No asterisks, bold, italics, headers, bullet points, or backticks. Plain text only.\n"
     "2. Be direct. Skip filler phrases like 'Certainly!' or 'Great question!'.\n"
     "3. If listing things, use plain numbered lines.\n"
-    "4. Give complete answers. Long replies are automatically split into multiple messages."
+    "4. Give complete answers. Long replies are automatically split into multiple messages.\n"
+    "5. You have access to Google Search — use it for real-time info like directions, schedules, weather, news, etc."
 )
 SYSTEM_PROMPT = os.environ.get("SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT)
 
@@ -48,13 +50,13 @@ HELP_TEXT = (
 )
 
 ABOUT_TEXT = (
-    "Made by Yaakov Sassoon. Powered by Claude AI (Haiku). "
+    "Made by Yaakov Sassoon. Powered by Gemini AI with real-time Google Search. "
     "Runs on Railway, sends SMS via Mailgun. "
     "Remembers your conversation and learns facts about you over time. "
     "Text 'help' for commands."
 )
 
-claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+gemini_client = genai.Client(api_key=GEMINI_API_KEY)
 
 REDIS_URL = os.environ.get("REDIS_URL", "")
 _redis: redis.Redis | None = None
@@ -107,33 +109,52 @@ def save_profile(sender: str, profile: dict) -> None:
         _local_profiles[sender] = profile
 
 
+def history_to_gemini(history: list[dict]) -> list[types.Content]:
+    """Convert stored history to Gemini Content format."""
+    contents = []
+    for msg in history:
+        role = "model" if msg["role"] == "assistant" else "user"
+        contents.append(types.Content(role=role, parts=[types.Part(text=msg["content"])]))
+    return contents
+
+
+def call_gemini(system: str, history: list[dict]) -> str:
+    """Call Gemini with conversation history and Google Search grounding."""
+    response = gemini_client.models.generate_content(
+        model=MODEL,
+        contents=history_to_gemini(history),
+        config=types.GenerateContentConfig(
+            system_instruction=system,
+            tools=[types.Tool(google_search=types.GoogleSearch())],
+        ),
+    )
+    return response.text
+
+
 def extract_facts_background(sender: str, user_text: str, ai_reply: str) -> None:
     """Run in a background thread: extract user facts and merge into profile."""
     try:
         existing = get_profile(sender)
         existing_str = json.dumps(existing) if existing else "{}"
-        response = claude.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=300,
-            system=(
-                "Extract personal facts about the user from the conversation snippet below. "
-                "Return ONLY a JSON object with any of these keys if mentioned: "
-                "name, location, address, email, phone, occupation, age, preferences, family, other. "
-                "Only include facts the user explicitly stated. "
-                "If nothing new, return {}. No explanation, just JSON."
+        response = gemini_client.models.generate_content(
+            model=MODEL,
+            contents=[types.Content(role="user", parts=[types.Part(text=(
+                f"Existing profile: {existing_str}\n\n"
+                f"User said: {user_text}\n"
+                f"Assistant replied: {ai_reply}\n\n"
+                "What new facts about the user can be extracted? Return updated JSON only."
+            ))])],
+            config=types.GenerateContentConfig(
+                system_instruction=(
+                    "Extract personal facts about the user from the conversation snippet below. "
+                    "Return ONLY a JSON object with any of these keys if mentioned: "
+                    "name, location, address, email, phone, occupation, age, preferences, family, other. "
+                    "Only include facts the user explicitly stated. "
+                    "If nothing new, return {}. No explanation, just JSON."
+                ),
             ),
-            messages=[
-                {"role": "user", "content": (
-                    f"Existing profile: {existing_str}\n\n"
-                    f"User said: {user_text}\n"
-                    f"Assistant replied: {ai_reply}\n\n"
-                    "What new facts about the user can be extracted? Return updated JSON only."
-                )}
-            ],
-            timeout=15,
         )
-        raw = response.content[0].text.strip()
-        # Pull out JSON if wrapped in markdown code block
+        raw = response.text.strip()
         match = re.search(r'\{[\s\S]*\}', raw)
         if match:
             facts = json.loads(match.group())
@@ -147,6 +168,7 @@ def extract_facts_background(sender: str, user_text: str, ai_reply: str) -> None
 
 SMS_CHAR_LIMIT = 1600
 
+
 def strip_markdown(text: str) -> str:
     """Remove markdown formatting that renders as literal symbols in SMS."""
     # Remove code blocks
@@ -158,6 +180,8 @@ def strip_markdown(text: str) -> str:
     text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
     # Remove inline code
     text = re.sub(r'`([^`\n]+)`', r'\1', text)
+    # Remove search grounding citations like [1], [2], etc.
+    text = re.sub(r'\[\d+\]', '', text)
     # Normalize markdown bullets to dashes
     text = re.sub(r'^\s*[*•]\s+', '- ', text, flags=re.MULTILINE)
     # Collapse excess blank lines
@@ -342,16 +366,9 @@ def incoming_email():
         system += f"\n\nKnown facts about this user: {facts}"
 
     try:
-        response = claude.messages.create(
-            model=MODEL,
-            max_tokens=1024,
-            system=system,
-            messages=history,
-            timeout=30,
-        )
-        ai_reply = sanitize_for_sms(strip_markdown(response.content[0].text))
-    except anthropic.APIError as e:
-        logger.error("Anthropic API error: %s", e)
+        ai_reply = sanitize_for_sms(strip_markdown(call_gemini(system, history)))
+    except Exception as e:
+        logger.error("Gemini API error: %s", e)
         ai_reply = "Sorry, I ran into an issue. Please try again."
 
     add_to_history(sender, "assistant", ai_reply)
