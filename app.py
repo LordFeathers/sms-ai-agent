@@ -167,6 +167,11 @@ def extract_facts_background(sender: str, user_text: str, ai_reply: str) -> None
                     "Only include facts the user explicitly stated. "
                     "If nothing new, return {}. No explanation, just JSON."
                 ),
+                tools=[
+                    types.Tool(google_search=types.GoogleSearch()),
+                    types.Tool(code_execution=types.ToolCodeExecution()),
+                    types.Tool(url_context=types.UrlContext()),
+                ],
             ),
         )
         raw = response.text.strip()
