@@ -31,7 +31,7 @@ MAX_HISTORY         = int(os.environ.get("MAX_HISTORY", "20"))
 MODEL               = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 TIMEZONE             = os.environ.get("TIMEZONE", "America/New_York")
-GOOGLE_MAPS_API_KEY  = os.environ.get("GOOGLE_MAPS_API_KEY", "")
+GOOGLE_MAPS_API_KEY  = os.environ.get("GOOGLE_MAPS_API_KEY", "") or GEMINI_API_KEY
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a personal AI assistant replying via SMS. Always follow these rules:\n"
