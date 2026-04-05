@@ -189,8 +189,6 @@ def call_gemini(system: str, history: list[dict]) -> str:
             system_instruction=system_with_time,
             tools=[
                 types.Tool(google_search=types.GoogleSearch()),
-
-                types.Tool(url_context=types.UrlContext()),
                 get_directions,
             ],
         ),
@@ -221,8 +219,6 @@ def extract_facts_background(sender: str, user_text: str, ai_reply: str) -> None
                 ),
                 tools=[
                     types.Tool(google_search=types.GoogleSearch()),
-    
-                    types.Tool(url_context=types.UrlContext()),
                 ],
             ),
         )
