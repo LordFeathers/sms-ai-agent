@@ -141,9 +141,10 @@ def call_gemini(system: str, history: list[dict]) -> str:
                 types.Tool(code_execution=types.ToolCodeExecution()),
                 types.Tool(url_context=types.UrlContext()),
             ],
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
-    return response.text
+    return response.text or ""
 
 
 def extract_facts_background(sender: str, user_text: str, ai_reply: str) -> None:
@@ -387,6 +388,8 @@ def incoming_email():
 
     try:
         ai_reply = sanitize_for_sms(strip_markdown(call_gemini(system, history)))
+        if not ai_reply:
+            ai_reply = "Sorry, I couldn't generate a response. Please try again."
     except Exception as e:
         logger.error("Gemini API error: %s", e)
         ai_reply = "Sorry, I ran into an issue. Please try again."
