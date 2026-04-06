@@ -28,7 +28,7 @@ MAILGUN_DOMAIN      = os.environ.get("MAILGUN_DOMAIN", "")
 ALLOWED_GATEWAYS    = set(os.environ.get("ALLOWED_GATEWAYS", SMS_GATEWAY).split(","))
 MAILGUN_WEBHOOK_KEY = os.environ.get("MAILGUN_WEBHOOK_KEY", "")
 MAX_HISTORY         = int(os.environ.get("MAX_HISTORY", "20"))
-MODEL               = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+MODEL               = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-lite")
 
 TIMEZONE             = os.environ.get("TIMEZONE", "America/New_York")
 
