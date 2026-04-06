@@ -141,10 +141,19 @@ def call_gemini(system: str, history: list[dict]) -> str:
                 types.Tool(code_execution=types.ToolCodeExecution()),
                 types.Tool(url_context=types.UrlContext()),
             ],
-            thinking_config=types.ThinkingConfig(thinking_budget=0),
         ),
     )
-    return response.text or ""
+    if response.text is not None:
+        return response.text
+    # Fallback: extract text from parts, skipping thought tokens
+    for candidate in (response.candidates or []):
+        for part in (candidate.content.parts or []):
+            if getattr(part, 'thought', False):
+                continue
+            if part.text:
+                return part.text
+    logger.error("Gemini returned no text. Finish reason: %s", response.candidates[0].finish_reason if response.candidates else "unknown")
+    return ""
 
 
 def extract_facts_background(sender: str, user_text: str, ai_reply: str) -> None:
